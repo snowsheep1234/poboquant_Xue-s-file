@@ -1,0 +1,449 @@
+#!/usr/bin/env python
+# coding:utf-8
+from PoboAPI import *
+from copy import *
+import datetime
+import time
+import numpy as np
+import math
+
+#开始时间，用于初始化一些参数
+def OnStart(context) :
+    print "I\'m starting..."
+    #设定一个全局变量品种
+    target = context.param["target"]
+    if target=="1":
+        g.code = "510050.SHSE"
+    elif target=="2":
+        g.code = "510300.SHSE"        
+    elif target=="3":
+        g.code = "159919.SZSE"
+        
+    g.num = context.param["numb"]
+    g.out = context.param["out"]
+    g.range = context.param["range"]   
+    g.flag = 0
+    #订阅实时数据，用于驱动OnQuote事件
+    SubscribeQuote(g.code)
+    #订阅K线数据，用于驱动OnBar事件
+    period=context.param["period"]
+    if period=="1":
+        SubscribeBar(g.code, BarType.Year)
+    elif period=="2":
+        SubscribeBar(g.code, BarType.Season)
+    elif period=="3":
+        SubscribeBar(g.code, BarType.Month)
+    elif period=="4":
+        SubscribeBar(g.code, BarType.Week)
+    elif period=="5":
+        SubscribeBar(g.code, BarType.Day)
+    elif period=="6":
+        SubscribeBar(g.code, BarType.Min240)
+    elif period=="7":
+        SubscribeBar(g.code, BarType.Min120)
+    elif period=="8":
+        SubscribeBar(g.code, BarType.Min60)
+    elif period=="9":
+        SubscribeBar(g.code, BarType.Min30)
+    elif period=="10":
+        SubscribeBar(g.code, BarType.Min15)
+    elif period=="11":
+        SubscribeBar(g.code, BarType.Min5)
+    elif period=="12":
+        SubscribeBar(g.code, BarType.Min3)
+    elif period=="13":
+        SubscribeBar(g.code, BarType.Min)        
+    #登录交易账号，需在主页用户管理中设置账号，并把证券测试替换成您的账户名称
+    context.myacc = None
+    if context.accounts.has_key("方正测试") :
+        print "登录交易账号[方正测试]"
+        if context.accounts["方正测试"].Login() :
+            context.myacc = context.accounts["方正测试"]   
+            
+def OnMarketQuotationInitialEx(context, exchange,daynight):
+    if exchange == 'SHSE' and daynight == 'day':
+        print '上交所行情开盘时重登交易账号'
+        context.myacc.Logout()
+        context.myacc.Login()            
+  
+        period=context.param["period"]
+        if period=="1":
+            SubscribeBar(g.code, BarType.Year)
+        elif period=="2":
+            SubscribeBar(g.code, BarType.Season)
+        elif period=="3":
+            SubscribeBar(g.code, BarType.Month)
+        elif period=="4":
+            SubscribeBar(g.code, BarType.Week)
+        elif period=="5":
+            SubscribeBar(g.code, BarType.Day)
+        elif period=="6":
+            SubscribeBar(g.code, BarType.Min240)
+        elif period=="7":
+            SubscribeBar(g.code, BarType.Min120)
+        elif period=="8":
+            SubscribeBar(g.code, BarType.Min60)
+        elif period=="9":
+            SubscribeBar(g.code, BarType.Min30)
+        elif period=="10":
+            SubscribeBar(g.code, BarType.Min15)
+        elif period=="11":
+            SubscribeBar(g.code, BarType.Min5)
+        elif period=="12":
+            SubscribeBar(g.code, BarType.Min3)
+        elif period=="13":
+            SubscribeBar(g.code, BarType.Min)           
+        
+        
+            
+def TestSetFeeRate(context,code):
+    if not context.myacc:
+      return
+    fee = PBObj();
+    fee.OpenUnit = 0
+    fee.OpenRate = 0.000
+
+    fee.CloseUnit = 0
+    fee.CloseRate = 0.000    
+
+    fee.CloseTodayUnit = 0
+    fee.CloseTodayRate = 0.000   
+
+    fee.MiniFee = 0
+    context.myacc.SetFee(code, fee) 
+  
+def stime(op):
+    info1 = GetContractInfo(op)
+    kill = info1['行权到期日']
+    cutime = GetCurrentTime()
+    c = cutime.date()
+    n = (kill - c).days
+    print n
+    
+  #设定选取平直或虚一档的函数    
+def Getop(code):
+    option = PBObj()    
+    option.EndDate = GetCurrentTime()
+    option.Count = 1
+    klinedata = GetHisData(g.code, BarType.Min, option)             
+    now1 = klinedata[-1].close #取得上一根K线的收盘价
+    cutime = GetCurrentTime()
+    #获取行权价档位
+    if now1 <= 3 :
+        interval=0.05 
+    elif now1 <= 5 :
+        interval = 0.1
+    elif now1 <= 10 :
+        interval = 0.25
+    elif now1 <= 20 :       
+        interval = 0.5
+    elif now1 <= 50 :          
+        interval = 1       
+    elif now1 <= 100 :
+        interval = 2.5
+    else :
+        interval = 5       
+    now50p = math.floor(now1/interval)*interval #平直或虚一档put
+    now50c = math.ceil(now1/interval)*interval #平直或虚一档call
+    #获取对应行权价的合约
+    atmopc = GetAtmOptionContract(code,0,now50c,0)
+    atmopp = GetAtmOptionContract(code,0,now50p,1)
+    #如果合约存在
+    if atmopc :        
+        info1 = GetContractInfo(atmopc)
+        kill = info1['行权到期日']
+        c = cutime.date()
+        n = (kill - c).days        
+        month_time=cutime
+        if n<=5: #检查合约到期日是否大于5天，否则开仓下月
+            atmopc = GetAtmOptionContract(code,1,now50c,0)
+            atmopp = GetAtmOptionContract(code,1,now50p,1)    
+    return atmopc,atmopp        
+  
+#获取上根K线收盘价  
+def Getprice(code):
+    option = PBObj()
+    option.count=2
+    option.EndDate = GetCurrentTime()
+    klinedata = GetHisData(code, BarType.Min, option)  
+    now1 = klinedata[-1].close
+    time=klinedata[-1].datetime
+    print str(now1) + '时间：' + str(time)        
+    return now1    
+
+#实时行情事件，当有新行情出现时调用该事件
+#过滤掉不需要的行情通知
+#def OnQuote(context, code) :
+def OnBar(context,code,bartype) :  
+    if code != g.code :
+        return    
+    option = PBObj()    
+    option.Count = 3
+    
+    period=context.param["period"]
+    if period=="1":
+        klinedata = GetHisData(g.code, BarType.Year, option)
+    elif period=="2":
+        klinedata = GetHisData(g.code, BarType.Season, option)
+    elif period=="3":
+        klinedata = GetHisData(g.code, BarType.Month, option)
+    elif period=="4":
+        klinedata = GetHisData(g.code, BarType.Week, option)        
+    elif period=="5":
+        klinedata = GetHisData(g.code, BarType.Day, option)        
+    elif period=="6":
+        klinedata = GetHisData(g.code, BarType.Min240, option)        
+    elif period=="7":
+        klinedata = GetHisData(g.code, BarType.Min120, option)        
+    elif period=="8":
+        klinedata = GetHisData(g.code, BarType.Min60, option)        
+    elif period=="9":
+        klinedata = GetHisData(g.code, BarType.Min30, option)        
+    elif period=="10":
+        klinedata = GetHisData(g.code, BarType.Min15, option)        
+    elif period=="11":
+        klinedata = GetHisData(g.code, BarType.Min5, option)        
+    elif period=="12":
+        klinedata = GetHisData(g.code, BarType.Min3, option)        
+    elif period=="13":
+        klinedata = GetHisData(g.code, BarType.Min, option)    
+    
+    
+    now1 = klinedata[-2].close  
+    last = klinedata[-3].close    
+    posi = context.myacc.GetPositions()     
+    cutime=GetCurrentTime()
+    b=GetCurrentTime().hour
+    c=GetCurrentTime().minute
+
+    if klinedata[-2].datetime.month !=klinedata[-3].datetime.month:
+        signal=1
+    else:
+        signal=0
+
+    if  b==10 and c==0 and signal==1 and g.flag==0:
+        opc,opp = Getop(g.code)        
+        TestSetFeeRate(context,opc)  
+        TestSetFeeRate(context,opp)          
+        g.start=context.myacc.AccountBalance.AssetsBalance
+        TestSmartOrder_sellopen(context,opc)
+        TestSmartOrder_sellopen(context,opp)               
+        dync=Getprice(opc)
+        dynp=Getprice(opp)
+        g.ccode = opc
+        g.pcode = opp
+        g.openprice=now1
+        g.cost=(dync+dynp)*10000
+        g.flag=1
+        
+    elif g.flag==1 :   
+        dyn1 = Getprice(g.ccode)
+        dyn2 = Getprice(g.pcode)
+        info1 = GetContractInfo(g.ccode)
+        kill = info1['行权到期日']
+        cutime = GetCurrentTime()
+        c = cutime.date()
+        sy = (kill - c).days                
+        cost_now=context.myacc.AccountBalance.AssetsBalance-g.start
+        if cost_now<=-g.out*g.cost or cost_now >g.out*g.cost or sy ==0 :
+            TestSetFeeRate(context,g.ccode)  
+            TestSetFeeRate(context,g.pcode)  
+            TestSmartOrder_buyclose(context,g.ccode)
+            TestSmartOrder_buyclose(context,g.pcode) 
+            g.flag=0
+        elif now1 >=(1+g.range)*g.openprice and last < (1+g.range)*g.openprice  :  
+            TestSetFeeRate(context,g.ccode)  
+            TestSetFeeRate(context,g.pcode)              
+            TestSmartOrder_buyclose(context,g.ccode)
+            TestSmartOrder_sellopen(context,g.pcode)            
+            g.flag=2
+        elif now1 <=(1-g.range)*g.openprice and last >(1-g.range)*g.openprice  : 
+            TestSetFeeRate(context,g.ccode)  
+            TestSetFeeRate(context,g.pcode)              
+            TestSmartOrder_buyclose(context,g.pcode)
+            TestSmartOrder_sellopen(context,g.ccode)             
+            g.flag=2
+    elif g.flag==2 :
+        dyn1 = Getprice(g.ccode)
+        dyn2 = Getprice(g.pcode)
+        info1 = GetContractInfo(g.ccode)
+        kill = info1['行权到期日']
+        cutime = GetCurrentTime()
+        c = cutime.date()
+        sy = (kill - c).days 
+        cost_now=context.myacc.AccountBalance.AssetsBalance-g.start
+        if cost_now<=-g.out*g.cost or cost_now >=g.out*g.cost or sy ==0 :
+            opcode=posi[0].contract
+            TestSetFeeRate(context,g.ccode)  
+            TestSetFeeRate(context,g.pcode)              
+
+            TestSmartOrder_buyclose(context,opcode)          
+            TestSmartOrder_buyclose(context,opcode)     
+            g.flag=0
+        elif now1 <= g.openprice and last > g.openprice :
+            TestSetFeeRate(context,g.ccode)  
+            TestSetFeeRate(context,g.pcode)              
+            TestSmartOrder_buyclose(context,g.pcode)
+            TestSmartOrder_sellopen(context,g.ccode)      
+            g.flag=1
+        elif now1 >= g.openprice and last < g.openprice : 
+            TestSetFeeRate(context,g.ccode)  
+            TestSetFeeRate(context,g.pcode)              
+            TestSmartOrder_buyclose(context,g.ccode)
+            TestSmartOrder_sellopen(context,g.pcode)  
+            g.flag=1
+
+#委托回报事件，当有委托回报时调用
+def OnOrderChange(context, AccountName, order) :
+    #print "OrderChanged on " + order.id + " on " + AccountName
+    #orderinfo=context.accounts["回测期货"].GetOrder(order.id)
+    print "-----------OnOrderChange查询-----------"
+    print "委托合约 "+str(order.contract)
+    print "委托数量 "+str(order.volume)
+    print "委托是否可撤 "+str(order.IsCanCancel())
+    print "委托买卖方向"+str(order.bstype.BuySellFlag)
+    print "委托编号 orderID "+str(order.id)
+    print "委托状态 "+str(order.status)
+    print "状态解释：0代表初始状态,4代表正在申报,5代表委托单已申报,32代表已完成(终止状态,部成部撤或全部成交),33：下单出错终止"   
+def OnTradeDeal(context, AccountName, trade) :
+    #TR = context.accounts["回测期货"].GetTradeDetail(trade.id, trade.bstype.BuySellFlag)
+    print "------------OnTradeDeal查询------------"
+    print "成交合约："+str(trade.contract)
+    print '成交价格:' + str(trade.price)
+    print "成交数量:"+str(trade.volume)
+    print "委托编号："+str(trade.orderid)
+    print "成交编号 ："+str(trade.id)
+      
+def TestSmartOrder_buyopen(context, code) :
+    OrderParam1 = OrderParam()    #生成一个OrderParam对象
+    OrderParam1.Code = code
+    OrderParam1.BSType = BSType.BuyOpen
+    aPriceType = deepcopy(PbPriceType.Limit)    #限价,别忘记from copy import *
+    aPriceType.LimitPriceType= 16     #
+    aPriceType.LimitPriceOffset = 20    #限价超价；不需要超价时,可不写
+    OrderParam1.PyPriceType = aPriceType
+    OrderParam1.Volume    = g.num
+    SplitOrderParam1 = SplitOrderParam()    #生成一个SplitOrderParam对象
+    SplitOrderParam1. Mode = 2  #拆单方式: 0-不拆单 1-固定拆单.2-随机拆单 
+    SplitOrderParam1. TimeSpan = 1    #下单的间隔时间(毫秒)    
+        #随机拆单
+    SplitOrderParam1. RandomSplit.Threshold = 10     #阈值: 大于5手
+    SplitOrderParam1. RandomSplit.LowerLimit = 3    #每次委托下限数量
+    SplitOrderParam1. RandomSplit.UpperLimit = 6    #每次委托上限数量
+        #追单参数
+    #ReorderParam1 = ReorderParam()
+    #ReorderParam1 .PriceType = '2'  #价格类型: 限价(默认)
+    #ReorderParam1 .LimitPriceType= 16  #限价类型:对手价
+    #ReorderParam1 .LimitPriceOffset = 2    #限价超价
+    #ReorderParam1 .RepeatTotal = 1000        #追价总次数
+    #ReorderParam1 .MaxaPriceOffset = 1000 #追价与首次下单价之差的最大价位
+    #ReorderParam1 .TimeOut = 10000000     #超时撤单时间(单位：ms)，=0时，不追单
+    ret = context.myacc.InsertSmartOrder(OrderParam1,SplitOrderParam1) 
+    if ret and ret.UID:
+        g.UID1 = ret.UID    #成功,记录智能单ID
+ 
+def TestSmartOrder_sellopen(context, code) :
+    OrderParam1 = OrderParam()    #生成一个OrderParam对象
+    OrderParam1.Code = code
+    OrderParam1.BSType = BSType.SellOpen
+    aPriceType = deepcopy(PbPriceType.Limit)    #限价,别忘记from copy import *
+    aPriceType.LimitPriceType= 16     #
+    aPriceType.LimitPriceOffset = 20    #限价超价；不需要超价时,可不写
+    OrderParam1.PyPriceType = aPriceType
+    OrderParam1.Volume    = g.num
+    SplitOrderParam1 = SplitOrderParam()    #生成一个SplitOrderParam对象
+    SplitOrderParam1. Mode = 2  #拆单方式: 0-不拆单 1-固定拆单.2-随机拆单 
+    SplitOrderParam1. TimeSpan = 1    #下单的间隔时间(毫秒)    
+        #随机拆单
+    SplitOrderParam1. RandomSplit.Threshold = 10     #阈值: 大于5手
+    SplitOrderParam1. RandomSplit.LowerLimit = 3    #每次委托下限数量
+    SplitOrderParam1. RandomSplit.UpperLimit = 6    #每次委托上限数量    
+    #ReorderParam1 = ReorderParam()
+    #ReorderParam1 .PriceType = '2'  #价格类型: 限价(默认)
+    #ReorderParam1 .LimitPriceType= 16  #限价类型:对手价
+    #ReorderParam1 .LimitPriceOffset = 20    #限价超价
+    #ReorderParam1 .RepeatTotal = 1000        #追价总次数
+    #ReorderParam1 .MaxaPriceOffset = 1000 #追价与首次下单价之差的最大价位
+    #ReorderParam1 .TimeOut = 10000000        #超时撤单时间(单位：ms)，=0时，不追单
+    ret = context.myacc.InsertSmartOrder(OrderParam1,SplitOrderParam1)
+    if ret and ret.UID:
+        g.UID1 = ret.UID    #成功,记录智能单ID
+
+def TestSmartOrder_sellclose(context, code) :
+    OrderParam1 = OrderParam()    #生成一个OrderParam对象
+    OrderParam1.Code = code
+    OrderParam1.BSType = BSType.SellClose
+    aPriceType = deepcopy(PbPriceType.Limit)    #限价,别忘记from copy import *
+    aPriceType.LimitPriceType= 16    #买一价
+    aPriceType.LimitPriceOffset = 20    #限价超价；不需要超价时,可不写
+    OrderParam1.PyPriceType = aPriceType
+    OrderParam1.Volume    = g.num
+    SplitOrderParam1 = SplitOrderParam()    #生成一个SplitOrderParam对象
+    SplitOrderParam1. Mode = 2  #拆单方式: 0-不拆单 1-固定拆单.2-随机拆单 
+    SplitOrderParam1. TimeSpan = 1    #下单的间隔时间(毫秒)    
+        #随机拆单
+    SplitOrderParam1. RandomSplit.Threshold = 10     #阈值: 大于5手
+    SplitOrderParam1. RandomSplit.LowerLimit = 3    #每次委托下限数量
+    SplitOrderParam1. RandomSplit.UpperLimit = 6    #每次委托上限数量 
+    #ReorderParam1 = ReorderParam()
+    #ReorderParam1 .PriceType = '2'  #价格类型: 限价(默认)
+    #ReorderParam1 .LimitPriceType= 16  #限价类型:对手价
+    #ReorderParam1 .LimitPriceOffset = 2    #限价超价
+    #ReorderParam1 .RepeatTotal = 1000        #追价总次数
+    #ReorderParam1 .MaxaPriceOffset = 1000 #追价与首次下单价之差的最大价位
+    #ReorderParam1 .TimeOut = 10000000       #超时撤单时间(单位：ms)，=0时，不追单                                         
+    ret = context.myacc.InsertSmartOrder(OrderParam1,SplitOrderParam1) 
+    if ret and ret.UID:
+        g.UID1 = ret.UID    #成功,记录智能单ID
+        
+        
+def TestSmartOrder_buyclose(context, code) :
+    OrderParam1 = OrderParam()    #生成一个OrderParam对象
+    OrderParam1.Code = code
+    OrderParam1.BSType = BSType.BuyClose
+    aPriceType = deepcopy(PbPriceType.Limit)    #限价,别忘记from copy import *
+    aPriceType.LimitPriceType= 16    #买一价
+    aPriceType.LimitPriceOffset = 20    #限价超价；不需要超价时,可不写
+    OrderParam1.PyPriceType = aPriceType
+    OrderParam1.Volume    = g.num
+    SplitOrderParam1 = SplitOrderParam()    #生成一个SplitOrderParam对象
+    SplitOrderParam1. Mode = 2  #拆单方式: 0-不拆单 1-固定拆单.2-随机拆单 
+    SplitOrderParam1. TimeSpan = 1    #下单的间隔时间(毫秒)    
+        #随机拆单
+    SplitOrderParam1. RandomSplit.Threshold = 10     #阈值: 大于5手
+    SplitOrderParam1. RandomSplit.LowerLimit = 3    #每次委托下限数量
+    SplitOrderParam1. RandomSplit.UpperLimit = 6    #每次委托上限数量
+    #ReorderParam1 = ReorderParam()
+    #ReorderParam1 .PriceType = '2'  #价格类型: 限价(默认)
+    #ReorderParam1 .LimitPriceType= 16  #限价类型:对手价
+    #ReorderParam1 .LimitPriceOffset = 2    #限价超价
+    #ReorderParam1 .RepeatTotal = 1000        #追价总次数
+    #ReorderParam1 .MaxaPriceOffset = 1000 #追价与首次下单价之差的最大价位
+    #ReorderParam1 .TimeOut = 10000000        #超时撤单时间(单位：ms)，=0时，不追单                                         
+    ret = context.myacc.InsertSmartOrder(OrderParam1,SplitOrderParam1) 
+    if ret and ret.UID:
+        g.UID1 = ret.UID    #成功,记录智能单ID
+      
+    
+def OnSmartOrderChange(context, AccountName, status):#监听智能单状态
+    print "=================OnSmartOrderChange================="
+    print("========智能单回报推送 账号名称:" + AccountName  )
+    DumpSmartOrderStatus(status)
+
+
+def DumpSmartOrderStatus(status):
+    print "开始检查智能单状态"
+    if not status:
+        print("智能单状态对象为空。")
+        return
+    print("====智能单状态---------------------:")
+    print("UID:"+str(status.UID)\
+    + " 委托类型:"+str(status.OrderType)\
+    + " 状态字:"+str(status.State)\
+    + " 出错码:"+str(status.ErrorCode)\
+    + " 出错信息:"+str(status.ErrorInfo)\
+    + " 委托总数:"+str(status.VolumeTotal)\
+    + " 已成交数:"+str(status.VolumeTraded)\
+    + " 未拆数量"+str(status.VolumeRemain)\
+    + " 追价总次数:"+str(status.ReorderTotal)\
+    + " 已下单次数:"+str(status.OrderNbr)) 
