@@ -308,15 +308,15 @@ def OnTradeDeal(context, AccountName, trade) :
     account_name = context.param['account_name']
     TR = context.accounts[account_name].GetTradeDetail(trade.id, trade.bstype.BuySellFlag)    
     #判断成交，改变状态变量
-    if TR.contract==g.opcode and TR.volume==1 and TR.bstype.OffsetFlag=="1":            
-        print ("基本款一：平仓成功" )                 
-    else:
-        print ("基本款一：平仓失败" ) 
+    #if TR.contract==g.opcode and TR.volume==1 and TR.bstype.OffsetFlag=="1":            
+    #    print ("基本款一：平仓成功" )                 
+    #else:
+    #    print ("基本款一：平仓失败" ) 
         
-    if TR.contract==g.newcode and TR.volume==1 and TR.bstype.OffsetFlag=="0":        
-        print ("基本款一：开仓成功")
-    else:
-        print ("基本款一：开仓失败" )     
+    #if TR.contract==g.newcode and TR.volume==1 and TR.bstype.OffsetFlag=="0":        
+    #    print ("基本款一：开仓成功")
+    #else:
+    #    print ("基本款一：开仓失败" )     
     
     
     
