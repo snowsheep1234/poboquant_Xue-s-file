@@ -1,0 +1,113 @@
+#!/usr/bin/env python
+# coding:utf-8
+from PoboAPI import *
+import datetime
+import numpy as np
+import pandas
+
+#开始时间，用于初始化一些参数
+def OnStart(context) :
+    print("I\'m starting...")
+    #登录交易账号，需在主页用户管理中设置账号，并把期货测试替换成您的账户名称
+    context.myacc = None
+    account_name = context.param['account_name']
+    context.myacc = account_name
+    if account_name in context.accounts :
+        print("登录交易账号[%s]"%account_name)
+        context.myacc = context.accounts[account_name]
+        if context.accounts[account_name].Login() :
+            print("登录成功")
+            df= GetPositionsAsDF(context.myacc)
+            print("该账号当前持仓为")
+            print(df)            
+    #9:15 12:45 自动登录交易账号
+            context.myacc .SetAutoRelogin(datetime.time(9,15))      
+            context.myacc .SetAutoRelogin(datetime.time(12,45))                          
+        else:
+            print("登录失败")
+        SetTimer(120)
+    else:
+        print("此账号不存在，请检查该账号配置")
+    #设定一个全局变量品种        
+    g.code = "510050.SHSE"    
+    #订阅实时数据，用于驱动OnQuote事件
+    SubscribeQuote(g.code)
+    #订阅K线数据，用于驱动OnBar事件
+    SubscribeBar(g.code, BarType.Min)
+
+    
+    
+def OnTimer(context,timerid):
+    if context.param['login_flag'] > 0:
+        print("收到测试登录通知，尝试登录")
+        if context.myacc.IsLogined():
+            context.myacc.Logout()
+        if context.myacc.Login() :
+            print("登录成功")
+        else:
+            print("登录失败")
+        context.param['login_flag'] = 0
+        
+# 在行情初始化事件—OnMarketQuotationInitialEx进行行情订阅，来保证交易时段有行情驱动交易。        
+def OnMarketQuotationInitialEx(context, exchange,daynight):
+    if exchange == 'SHSE' and daynight == 'day':
+        print ("上交所行情开盘时重登交易账号")
+        context.myacc.Logout()
+        context.myacc.Login()   
+        SubscribeBar(g.code, BarType.Min)
+        klinedata = GetHisData2(g.code,BarType.Day)
+        lastclose = klinedata[-1].close
+        g.heyue_call = GetAtmOptionContract(g.code,0,lastclose,0)        
+        g.heyue_put = GetAtmOptionContract(g.code,0,lastclose,0)      
+        
+
+def OnBar(context,code,bartype):           
+    cutime=GetCurrentTime()
+    hh=GetCurrentTime().hour
+    mm=GetCurrentTime().minute     
+
+    # 10:00 卖出平值认购和认沽合约
+    if hh==10 and mm==0:
+        log.info("卖当月平值call，卖当月平值put")
+        QuickInsertSmartCancelOrder(context.myacc, g.heyue_call, BSType.SellOpen, PriceType(PbPriceType.Limit,limit_price_type=16),1,time_out= 60000)            
+        QuickInsertSmartCancelOrder(context.myacc, g.heyue_put, BSType.SellOpen, PriceType(PbPriceType.Limit,limit_price_type=16),1,time_out= 60000)            
+            
+            
+    # 10:30 买回平仓
+    if hh==10 and mm==30:
+        log.info("平仓出场")    
+        QuickInsertOrder(context.myacc,g.heyue_call ,'buy','close',PriceType(PbPriceType.Limit,16),1)    
+        QuickInsertOrder(context.myacc,g.heyue_put ,'buy','close',PriceType(PbPriceType.Limit,16),1)    
+            
+            
+    # 13:30 买入平值认购和认沽合约
+    if hh==13 and mm==30:
+        log.info("买当月平值call，买当月平值put")            
+        QuickInsertSmartCancelOrder(context.myacc, g.heyue_call, BSType.BuyOpen, PriceType(PbPriceType.Limit,limit_price_type=16),1,time_out= 60000)            
+        QuickInsertSmartCancelOrder(context.myacc, g.heyue_put, BSType.BuyOpen, PriceType(PbPriceType.Limit,limit_price_type=16),1,time_out= 60000)            
+             
+            
+            
+    # 14:00 卖出平仓
+    if hh==14 and mm==0:
+        log.info("平仓出场")               
+        QuickInsertOrder(context.myacc,g.heyue_call ,'sell','close',PriceType(PbPriceType.Limit,16),1)    
+        QuickInsertOrder(context.myacc,g.heyue_put ,'sell','close',PriceType(PbPriceType.Limit,16),1)                
+            
+def OnTradeDeal(context, AccountName, trade) :
+    #0--开仓
+    if trade.bstype.OffsetFlag == '0': 
+        abc = "开仓"
+    #1--平仓
+    elif trade.bstype.OffsetFlag == '1':
+        abc = "平仓"
+    print("----------OnTradeDeal查询------------")
+    print(abc)
+    print("成交合约："+str(trade.contract)) 
+    print("成交数量:" + str(trade.volume)) 
+    print("委托编号："+str(trade.orderid)) 
+    print("成交编号 ："+str(trade.id))              
+            
+            
+            
+                 
