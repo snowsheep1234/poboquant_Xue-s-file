@@ -108,7 +108,7 @@ def OnBar(context,code,bartype) :
         dync=GetQuote(opc).now
         dynp=GetQuote(opp).now
         g.openprice=now1
-        g.cost=(dync+dynp)*10000
+        g.cost=(dync+dynp)*10000*g.num
         g.flag=1 # 状态1：建仓
         g.profit=0  
         g.enterprice=[dync,dynp]
@@ -139,8 +139,7 @@ def OnBar(context,code,bartype) :
             QuickInsertOrder(g.a,g.ccode, 'sell','open', g.price_type,g.num)        
             g.profit=g.profit+(g.enterprice[1]-dyn2)*10000*g.num            
             g.flag=3 #状态3：下跌复仇，持有short call
-            g.enterprice[1]=dyn1
-            
+            g.enterprice[1]=dyn1           
             print("基本款2：下跌复仇\n"+str(g.ccode)+" 最新价：" +str(dyn1))      
             
     elif g.flag==2 :
@@ -157,8 +156,7 @@ def OnBar(context,code,bartype) :
             QuickInsertOrder(g.a,g.pcode, 'sell','open', g.price_type,g.num)             
             g.flag=1
             g.enterprice[0]=dyn1
-            g.profit=g.profit+(g.enterprice[0]-dyn1)*10000*g.num            
-            
+            g.profit=g.profit+(g.enterprice[0]-dyn1)*10000*g.num                        
             print("基本款2：重置仓位")
             
             
