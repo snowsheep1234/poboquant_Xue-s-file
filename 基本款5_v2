@@ -1,0 +1,157 @@
+#!/usr/bin/env python
+# coding:utf-8
+from PoboAPI import *
+from copy import *
+import datetime
+import time
+import numpy as np
+import math
+
+#开始时间，用于初始化一些参数
+def OnStart(context) :
+    print "I\'m starting..."
+    #设定全局变量品种
+    #下单方式    
+    pr_type = context.param["pr_type"]
+    if pr_type=="2":
+        g.tp=2
+    elif pr_type=="16":
+        g.tp=16        
+    g.LPO = context.param["LPO"]    
+    g.price_type = PriceType(PbPriceType.Limit,limit_price_type = g.tp,limit_price_offset=g.LPO) 
+    #下单手数
+    g.num = context.param["num"] 
+    #标的物
+    target = context.param["target"]
+    if target=="1":
+        g.code = "510050.SHSE"
+    elif target=="2":
+        g.code = "510300.SHSE"        
+    elif target=="3":
+        g.code = "159919.SZSE"    
+    g.flag=0 # 出场状态
+    
+    #订阅实时数据，用于驱动OnQuote事件
+    SubscribeQuote(g.code)
+    #订阅K线数据，用于驱动OnBar事件
+    SubscribeBar(g.code, BarType.Min60)
+    #登录交易账号，需在主页用户管理中设置账号，并把证券测试替换成您的账户名称
+    context.myacc = None
+    account_name = context.param['account_name']
+    context.myacc = account_name    
+    if account_name in context.accounts :
+        print("登录交易账号[%s]"%account_name)
+        context.myacc = context.accounts[account_name]
+        if context.accounts[account_name].Login() :
+            print("登录成功")
+            g.a=context.myacc
+            df= GetPositionsAsDF(context.myacc)
+            print("该账号当前持仓为")
+            print(df)            
+    #9:15 12:45 自动登录交易账号
+            context.myacc .SetAutoRelogin(datetime.time(9,15))      
+            context.myacc .SetAutoRelogin(datetime.time(12,45))                          
+        else:
+            print("登录失败")
+        SetTimer(120)
+    else:
+        print("此账号不存在，请检查该账号配置")          
+
+def OnMarketQuotationInitialEx(context, exchange,daynight):
+    if exchange == 'SHSE' and daynight == 'day':
+        print '上交所行情开盘时重登交易账号'
+        context.myacc.Logout()
+        context.myacc.Login()            
+        SubscribeBar(g.code, BarType.Min60)              
+
+def OnBar(context,code,bartype) :  
+    if code != g.code :
+        return    
+    cutime = GetCurrentTime()    
+    macd = GetIndicator('MACD',g.code,bar_type= BarType.Min60)
+    macd=macd["MACD"]    
+    opc,opc_1 = Getop(g.code)  
+    if macd[-3]>0 and macd[-2]<0 and g.flag==0:
+        print "基本款5：开仓合约"
+        print opc
+        print opc_1
+        QuickInsertOrder(g.a,opc, 'buy','open', g.price_type,g.num)
+        QuickInsertOrder(g.a,opc_1, 'sell','open', g.price_type,g.num*2)
+        g.flag=1 #持仓状态
+        g.opcode1=opc
+        g.opcode2=opc_1
+        
+    if g.flag==1:
+        info1 = GetContractInfo(g.opcode1)
+        kill = info1['行权到期日']
+        cutime = GetCurrentTime()
+        c = cutime.date()
+        sy = (kill - c).days     
+                
+        if sy ==0 or (macd[-3]<0 and macd[-2]>0) :#平仓出场
+            QuickInsertOrder(g.a,g.opcode1, 'sell','close', g.price_type,g.num)             
+            QuickInsertOrder(g.a,g.opcode2, 'buy','close', g.price_type,g.num*2) 
+            g.opcode1=[]
+            g.opcode2=[]
+            g.flag=0
+            
+#委托回报事件，当有委托回报时调用
+def OnTradeDeal(context, AccountName, trade) :
+    #TR = context.accounts["回测期货"].GetTradeDetail(trade.id, trade.bstype.BuySellFlag)
+    print "------------OnTradeDeal查询------------"
+    print "成交合约："+str(trade.contract)
+    print '成交价格:' + str(trade.price)
+    print "成交数量:"+str(trade.volume)
+    print "委托编号："+str(trade.orderid)
+    print "成交编号 ："+str(trade.id)
+    
+def stime(op):
+    info1 = GetContractInfo(op)
+    kill = info1['行权到期日']
+    cutime = GetCurrentTime()
+    c = cutime.date()
+    n = (kill - c).days
+    print n
+
+def Getop(code):
+    option = PBObj()    
+    option.EndDate = GetCurrentTime()
+    option.Count = 1
+    klinedata = GetHisData(g.code, BarType.Min60, option)                         
+    now1 = klinedata[-1].close #取得上一根K线的收盘价
+    print str(now1)+"收盘价"
+    cutime = GetCurrentTime()
+    #获取行权价档位
+    if now1 <= 3 :
+        interval=0.05 
+    elif now1 <= 5 :
+        interval = 0.1
+    elif now1 <= 10 :
+        interval = 0.25
+    elif now1 <= 20 :       
+        interval = 0.5
+    elif now1 <= 50 :          
+        interval = 1       
+    elif now1 <= 100 :
+        interval = 2.5
+    else :
+        interval = 5       
+    now50c = round(now1/interval)*interval+interval #平直或虚一档call
+    now1 = round(now1/interval)*interval
+    #获取对应行权价的合约
+    atmopc_1 = GetAtmOptionContract(code,0,now50c,0)
+    atmopc = GetAtmOptionContract(code,0,now1,0)
+    #如果合约存在
+    if atmopc :        
+        info1 = GetContractInfo(atmopc)
+        kill = info1['行权到期日']
+        c = cutime.date()
+        n = (kill - c).days        
+        month_time=cutime
+        if n<=5: #检查合约到期日是否大于5天，否则开仓下月
+            atmopc_1 = GetAtmOptionContract(code,1,now50c,0)
+            atmopc = GetAtmOptionContract(code,1,now1,0)    
+    #print str(atmopc)+"平值"
+    #print str(atmopc_1)+"虚值"
+    return atmopc,atmopc_1            
+
