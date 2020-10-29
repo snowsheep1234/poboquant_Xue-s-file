@@ -1,0 +1,39 @@
+#!/usr/bin/env python
+# coding:utf-8
+from PoboAPI import *
+import datetime
+import numpy as np
+import pandas
+
+#开始时间，用于初始化一些参数
+def OnStart(context) :
+    print("I\'m starting...")
+    #登录交易账号，需在主页用户管理中设置账号，并把期货测试替换成您的账户名称
+    context.myacc = None
+    account_name = context.param['account_name']
+    context.myacc = account_name
+    if account_name in context.accounts :
+        print("登录交易账号[%s]"%account_name)
+        context.myacc = context.accounts[account_name]
+        if context.accounts[account_name].Login() :
+            print("登录成功")
+            df= GetPositionsAsDF(context.myacc)
+            print("该账号当前持仓为")
+            print(df)
+        else:
+            print("登录失败")
+        SetTimer(120)
+    else:
+        print("此账号不存在，请检查该账号配置")
+#     print( context.param['login_flag'])
+ 
+def OnTimer(context,timerid):
+    if context.param['login_flag'] > 0:
+        print("收到测试登录通知，尝试登录")
+        if context.myacc.IsLogined():
+            context.myacc.Logout()
+        if context.myacc.Login() :
+            print("登录成功")
+        else:
+            print("登录失败")
+        context.param['login_flag'] = 0
