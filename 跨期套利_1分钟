@@ -1,0 +1,176 @@
+#!/usr/bin/env python
+# coding:utf-8
+from PoboAPI import *
+import datetime
+import time
+import numpy as np
+from copy import *
+
+
+#开始时间，用于初始化一些参数
+def OnStart(context) :
+    context.myacc = None
+    #登录交易账号
+    account_name = context.param['account_name']
+    context.myacc = account_name    
+    if context.accounts["FZOPTION"].Login() :
+        context.myacc = context.accounts["FZOPTION"]
+        
+    if account_name in context.accounts :
+        print("登录交易账号[%s]"%account_name)
+        context.myacc = context.accounts[account_name]
+        if context.accounts[account_name].Login() :
+            print("登录成功")
+            df= GetPositionsAsDF(context.myacc)
+            print("该账号当前持仓为")
+            print(df)            
+    #9:15 12:45 自动登录交易账号
+            context.myacc .SetAutoRelogin(datetime.time(9,15))      
+            context.myacc .SetAutoRelogin(datetime.time(12,45))                        
+        else:
+            print("登录失败")
+        SetTimer(120)
+    else:
+        print("此账号不存在，请检查该账号配置")
+        
+
+#每天行情初始化的，获取当前的50etf对应的平值期权
+def OnMarketQuotationInitialEx(context, exchange,daynight):
+    #过滤掉非上交所的信号
+    if exchange != 'SHSE':
+        return
+    #获取期权标的
+    g.code = '510050.SHSE'
+    g.flag=[]
+    g.flag2=0
+    klinedata = GetHisData2(g.code,BarType.Day)
+    lastclose = klinedata[-1].close
+    #获取当月平价认购期权
+    g.atmopc1 = GetAtmOptionContract(g.code,0,lastclose,0)
+    g.atmopp1 = GetAtmOptionContract(g.code,0,lastclose,1)    
+    g.atmopc2 = GetAtmOptionContract(g.code,1,lastclose,0)
+    g.atmopp2 = GetAtmOptionContract(g.code,1,lastclose,1)    
+    g.opcode=[g.atmopc1,g.atmopp1,g.atmopc2,g.atmopp2]
+
+    
+    #订阅日K线用来驱动onbar事件
+    #SubscribeBar(g.atmopc1,BarType.Min)
+    #SubscribeBar(g.atmopc2,BarType.Min)
+    #SubscribeBar(g.atmopp1,BarType.Min)
+    #SubscribeBar(g.atmopp2,BarType.Min)
+    SubscribeBar(g.code,BarType.Min)
+
+    
+#获取上根K线收盘价  
+def Getprice(code):
+    option = PBObj()
+    option.count=2
+    option.EndDate = GetCurrentTime()
+    klinedata = GetHisData(code, BarType.Min, option)  
+    now1 = klinedata[-1].close
+    time=klinedata[-1].datetime
+    print (str(code)+'价格:'+str(now1) + '时间：' + str(time))        
+    return now1     
+    
+def TestSetFeeRate(context,code):
+    if not context.myacc:
+      return
+    fee = PBObj();
+    fee.OpenUnit = 0
+    fee.OpenRate = 0.000
+    fee.CloseUnit = 0
+    fee.CloseRate = 0.000    
+    fee.CloseTodayUnit = 0
+    fee.CloseTodayRate = 0.000   
+    fee.MiniFee = 0
+    context.myacc.SetFee(code, fee)    
+
+def OnBar(context,code,bartype):
+    posi = context.myacc.GetPositions() #获取所有持仓
+    cutime=GetCurrentTime()
+    hh=GetCurrentTime().hour
+    mm=GetCurrentTime().minute
+    
+    if hh==9 and mm<35:
+        pr_last=[]     
+        if len(posi)!=0:
+            for i in posi:
+                if i.bstype.BuySellFlag=="0":
+                    QuickInsertOrder(context.myacc,i.contract,'sell','close',PriceType(PbPriceType.Limit,16),1)
+                if i.bstype.BuySellFlag=="1":
+                    QuickInsertOrder(context.myacc,i.contract,'buy','close',PriceType(PbPriceType.Limit,16),1)                    
+                            
+        for i in g.opcode:
+            TestSetFeeRate(context,i)
+            klinedata = GetHisData2(i,BarType.Day)   
+            if klinedata:
+                pr_last.append(klinedata[-1].close)
+            else:
+                dyndata = GetQuote(i)
+                now1 = dyndata.now         
+                pr_last.append(now1)
+                
+        g.dif_last=pr_last[2]+pr_last[3]-pr_last[0]-pr_last[1]        
+        return
+    
+    info1 = GetContractInfo(g.opcode[0])
+    kill = info1['行权到期日']
+    c = cutime.date()
+    n = (kill - c).days       
+    # 检查时间，14:40之后不新开仓
+    if (hh==14 and mm>40) or n<=10:
+        g.flag=False
+    else :
+        g.flag=True
+        
+    pr=[]
+    for i in g.opcode:
+        pr.append(Getprice(i))
+        
+    pr_dif=pr[2]+pr[3]-pr[1]-pr[0]-g.dif_last
+    
+    
+# 权利金差超过75分位卖出价差    
+    if len(posi) == 0 and pr_dif>0.0025 and g.flag: 
+        print("卖出价差")
+        #下单卖开,2表示最新价
+        QuickInsertOrder(context.myacc,g.atmopc1,'buy','open',PriceType(PbPriceType.Limit,16),1)
+        QuickInsertOrder(context.myacc,g.atmopp1,'buy','open',PriceType(PbPriceType.Limit,16),1)
+        QuickInsertOrder(context.myacc,g.atmopc2,'sell','open',PriceType(PbPriceType.Limit,16),1)
+        QuickInsertOrder(context.myacc,g.atmopp2,'sell','open',PriceType(PbPriceType.Limit,16),1)
+        g.flag2=-1        
+        
+    elif len(posi) >0 and ((pr_dif<-0.0001 and g.flag2==-1)or (hh==14 and mm>50)):
+        #opcode = posi[0].contract
+        print("买平")
+        g.flag2=0
+        #下单买平,16表示对手价,平掉现有仓位的所有手数
+        QuickInsertOrder(context.myacc,g.atmopc1,'sell','close',PriceType(PbPriceType.Limit,16),1)
+        QuickInsertOrder(context.myacc,g.atmopp1,'sell','close',PriceType(PbPriceType.Limit,16),1)
+        QuickInsertOrder(context.myacc,g.atmopc2,'buy','close',PriceType(PbPriceType.Limit,16),1)
+        QuickInsertOrder(context.myacc,g.atmopp2,'buy','close',PriceType(PbPriceType.Limit,16),1)
+
+# 权利金差低于25分位买入价差    
+    if len(posi) == 0 and pr_dif<-0.0040 and g.flag: 
+        print("买入价差")
+        #下单卖开,2表示最新价
+        QuickInsertOrder(context.myacc,g.atmopc1,'sell','open',PriceType(PbPriceType.Limit,16),1)
+        QuickInsertOrder(context.myacc,g.atmopp1,'sell','open',PriceType(PbPriceType.Limit,16),1)
+        QuickInsertOrder(context.myacc,g.atmopc2,'buy','open',PriceType(PbPriceType.Limit,16),1)
+        QuickInsertOrder(context.myacc,g.atmopp2,'buy','open',PriceType(PbPriceType.Limit,16),1)
+        g.flag2=1        
+        
+    elif len(posi) >0 and ((pr_dif>-0.0001 and g.flag2==1) or (hh==14 and mm>50)):
+        #opcode = posi[0].contract
+        print("买平")
+        g.flag2=0
+        #下单买平,16表示对手价,平掉现有仓位的所有手数
+        QuickInsertOrder(context.myacc,g.atmopc1,'buy','close',PriceType(PbPriceType.Limit,16),1)
+        QuickInsertOrder(context.myacc,g.atmopp1,'buy','close',PriceType(PbPriceType.Limit,16),1)
+        QuickInsertOrder(context.myacc,g.atmopc2,'sell','close',PriceType(PbPriceType.Limit,16),1)
+        QuickInsertOrder(context.myacc,g.atmopp2,'sell','close',PriceType(PbPriceType.Limit,16),1)        
+
+
+        
+        
+    
