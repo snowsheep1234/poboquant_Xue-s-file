@@ -1,0 +1,200 @@
+#!/usr/bin/env python
+# coding:utf-8
+from PoboAPI import *
+import datetime
+import time
+import numpy as np
+import math
+from copy import *
+
+#开始时间，用于初始化一些参数
+def OnStart(context) :
+    print "I\'m starting..."
+    #设定一个全局变量品种
+    #交易品种
+    target = context.param["target"]
+    if target=="1":
+        g.code = "510050.SHSE"
+    elif target=="2":
+        g.code = "510300.SHSE"        
+    elif target=="3":
+        g.code = "159919.SZSE"
+    #下单数量    
+    g.num = context.param["num"]            
+    g.day = 0
+    g.range=context.param["range"]  
+    g.rt=context.param["rt"]  
+    g.flag=0 #无持仓状态
+    g.opcode=[]    
+    g.enterprice=0 #入场价格
+    
+    #下单方式    
+    pr_type = context.param["pr_type"]
+    if pr_type=="2":
+        g.tp=2
+    elif pr_type=="16":
+        g.tp=16        
+    g.LPO = context.param["LPO"]    
+    g.price_type = PriceType(PbPriceType.Limit,limit_price_type = g.tp,limit_price_offset=g.LPO)     
+    
+    #订阅K线数据，用于驱动OnBar事件
+    SubscribeBar(g.code, BarType.Day)
+    #登录交易账号，需在主页用户管理中设置账号，并把证券测试替换成您的账户名称
+    context.myacc = None
+    account_name = context.param['account_name']
+    context.myacc = account_name    
+    if account_name in context.accounts :
+        print("登录交易账号[%s]"%account_name)
+        context.myacc = context.accounts[account_name]
+        if context.accounts[account_name].Login() :
+            print("登录成功")
+            g.a=context.myacc
+            df= GetPositionsAsDF(context.myacc)
+            print("该账号当前持仓为")
+            print(df)            
+    #9:15 12:45 自动登录交易账号
+            context.myacc .SetAutoRelogin(datetime.time(9,15))      
+            context.myacc .SetAutoRelogin(datetime.time(12,45))                          
+        else:
+            print("登录失败")
+            context.myacc .SetAutoRelogin(datetime.time(9,15))      
+            context.myacc .SetAutoRelogin(datetime.time(12,45))              
+        SetTimer(120)
+    else:
+        print("此账号不存在，请检查该账号配置")   
+            
+           
+
+def OnMarketQuotationInitialEx(context, exchange,daynight):
+    if exchange == 'SHSE' and daynight == 'day':
+        print '上交所行情开盘时重登交易账号'
+        context.myacc.Logout()
+        context.myacc.Login()         
+        SubscribeBar(g.code, BarType.Day)        
+              
+ 
+def OnBar(context,code,bartype) :    
+    if code != g.code :
+        return         
+    option = PBObj()    
+    option.EndDate = GetCurrentTime()
+    option.Count = 250
+    klinedata = GetHisData(g.code, BarType.Day, option)
+    last = klinedata[-2].close
+    now1 = klinedata[-1].close
+    #print str(now1)+'上根收盘价：'+str(klinedata[-1].datetime)   
+    #posi = context.myacc.GetPositions()        
+
+    #计算均线
+    i=0
+    klist = []
+    while i<len(klinedata)-1:
+        klist.append(klinedata[i].close)
+        i+=1
+    if len(klist)>0:
+        X = np.array(klist, dtype=np.double)
+        ma_1 = CreateCalcObj()        
+        ma2=context.param["MA2"]
+        ma_20 = ma_1.MA(X, ma2, -2)     
+        
+        ma_2 = CreateCalcObj()     
+        ma1=context.param["MA1"]
+        ma_5 = ma_2.MA(X, ma1, -2)       
+    
+       
+    if g.flag!=0 and g.opcode:  
+        #cost_now=context.myacc.AccountBalance.AssetsBalance-g.start
+        #print g.opcode
+        g.enterprice=Getprice(g.opcode)  
+        g.floatrt=(g.enterprice-g.cost)/g.cost
+        g.day=g.day+1
+        if abs(now1/g.etf50-1)>g.range  or g.floatrt>g.rt or g.day>10:            
+            QuickInsertOrder(g.a,g.opcode, 'sell','close', g.price_type,g.num)   
+            g.flag=0 #离场状态
+            g.cost=0
+            g.opcode=[]
+    
+    if ma_5[-2]<ma_20[-2] and ma_5[-1] > ma_20[-1]: #ma5上穿ma20
+        print("基本款3：短期均线上穿长期均线")        
+        opc,opp = Getop(g.code) 
+        if g.opcode : #平仓仓位           
+            QuickInsertOrder(g.a,g.opcode, 'sell','close', g.price_type,g.num)        
+            
+        QuickInsertOrder(g.a,opc, 'buy','open', g.price_type,g.num)        
+        g.opcode=opc
+        g.cost=Getprice(g.opcode)
+        g.etf50=now1
+        g.day=1                       
+        g.flag=1#持仓状态
+        
+    elif ma_5[-2]>ma_20[-2] and ma_5[-1] < ma_20[-1]: #ma5下穿ma20
+        print("基本款3：短期均线下穿长期均线")                
+        opc,opp = Getop(g.code)  
+        if g.opcode : #平仓仓位
+            QuickInsertOrder(g.a,g.opcode, 'sell','close', g.price_type,g.num)        
+            
+        price=Getprice(opp)       
+        QuickInsertOrder(g.a,opp, 'buy','open', g.price_type,g.num)                          
+        g.opcode=opp
+        g.cost=Getprice(g.opcode)
+        g.etf50=now1
+        g.day=1     
+        g.flag=1#持仓状态
+        
+def OnTradeDeal(context, AccountName, trade) :
+    #TR = context.accounts["回测期货"].GetTradeDetail(trade.id, trade.bstype.BuySellFlag)
+    print "------------OnTradeDeal查询------------"
+    print "成交合约："+str(trade.contract)
+    print '成交价格:' + str(trade.price)
+    print "成交数量:"+str(trade.volume)
+    print "委托编号："+str(trade.orderid)
+    print "成交编号 ："+str(trade.id)
+    
+def Getop(code):
+    option = PBObj()    
+    option.EndDate = GetCurrentTime()
+    option.Count = 1
+    klinedata = GetHisData(g.code, BarType.Day, option)        
+        
+    now1 = klinedata[-1].close #取得上一根K线的收盘价
+    cutime = GetCurrentTime()
+    #获取行权价档位
+    if now1 <= 3 :
+        interval=0.05 
+    elif now1 <= 5 :
+        interval = 0.1
+    elif now1 <= 10 :
+        interval = 0.25
+    elif now1 <= 20 :       
+        interval = 0.5
+    elif now1 <= 50 :          
+        interval = 1       
+    elif now1 <= 100 :
+        interval = 2.5
+    else :
+        interval = 5       
+
+    #获取对应行权价的合约
+    atmopc = GetAtmOptionContract(code,0,now1,0)
+    atmopp = GetAtmOptionContract(code,0,now1,1)
+    #如果合约存在
+    if atmopc :        
+        info1 = GetContractInfo(atmopc)
+        kill = info1['行权到期日']
+        c = cutime.date()
+        n = (kill - c).days        
+        month_time=cutime
+        if n<=13: #检查合约到期日是否大于10天，否则开仓下月
+            atmopc = GetAtmOptionContract(code,1,now1,0)
+            atmopp = GetAtmOptionContract(code,1,now1,1)    
+    return atmopc,atmopp
+
+def Getprice(code):
+    option = PBObj()
+    option.EndDate = GetCurrentTime()
+    klinedata = GetHisData(code, BarType.Min, option)  
+    now1 = klinedata[-1].close
+    time=klinedata[-1].datetime
+    #print str(now1) + '时间：' + str(time)        
+    return now1  
+     
