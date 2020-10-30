@@ -1,0 +1,259 @@
+# coding:utf-8
+#!/usr/bin/env python
+from PoboAPI import *
+from copy import *
+import datetime
+import time
+import numpy as np
+import math
+
+#开始时间，用于初始化一些参数
+def OnStart(context) :
+    print "I\'m starting..."
+    #设定一个全局变量品种
+    g.num = context.param["numb"]    
+    target = context.param["target"]
+    #下单方式    
+    pr_type = context.param["pr_type"]
+    if pr_type=="2":
+        g.tp=2
+    elif pr_type=="16":
+        g.tp=16        
+    g.LPO = context.param["LPO"]    
+    g.price_type = PriceType(PbPriceType.Limit,limit_price_type = g.tp,limit_price_offset=g.LPO)     
+    g.enterprice=0
+    if target=="1":
+        g.code = "510050.SHSE"
+    elif target=="2":
+        g.code = "510300.SHSE"        
+    elif target=="3":
+        g.code = "159919.SZSE"    
+    
+    
+    g.profit=0 
+    g.signal=0 # 未持仓状态
+    
+    #订阅实时数据，用于驱动OnQuote事件
+    SubscribeQuote(g.code)
+    #订阅K线数据，用于驱动OnBar事件
+    SubscribeBar(g.code, BarType.Min30)
+    #登录交易账号，需在主页用户管理中设置账号，并把证券测试替换成您的账户名称
+    context.myacc = None
+    account_name = context.param['account_name']
+    context.myacc = account_name    
+    if account_name in context.accounts :
+        print("登录交易账号[%s]"%account_name)
+        context.myacc = context.accounts[account_name]
+        if context.accounts[account_name].Login() :
+            print("登录成功")
+            g.a=context.myacc
+            df= GetPositionsAsDF(context.myacc)
+            print("该账号当前持仓为")
+            print(df)            
+    #9:15 12:45 自动登录交易账号
+            context.myacc .SetAutoRelogin(datetime.time(9,15))      
+            context.myacc .SetAutoRelogin(datetime.time(12,45))                          
+        else:
+            print("登录失败")
+        SetTimer(120)
+    else:
+        print("此账号不存在，请检查该账号配置")   
+
+def OnMarketQuotationInitialEx(context, exchange,daynight):
+    if exchange == 'SHSE' and daynight == 'day':
+        print '上交所行情开盘时重登交易账号'
+        context.myacc.Logout()
+        context.myacc.Login()            
+        SubscribeBar(g.code, BarType.Min30)                  
+
+#实时行情事件，当有新行情出现时调用该事件
+def OnBar(context,code,bartype) :
+    #过滤掉不需要的行情通知
+    if code != g.code :
+        return        
+    option = PBObj()    
+    option.Count = 2
+    klinedata = GetHisData(g.code, BarType.Min30, option)
+    now1 = klinedata[-2].close               
+    b = CreateCalcObj()
+    option = PBObj()
+    option.EndDate = GetCurrentTime()
+    option.Count = 23
+    #计算20天历史波动率
+    klist = GetHisDataByField(g.code, BarType.Day, "close", option)
+    if len(klist)>0:
+        Kl = np.array(klist, dtype=np.double)
+        c20=b.GetVolatility(Kl[2:])
+        c20_1=b.GetVolatility(Kl[1:-1])
+        c20_2=b.GetVolatility(Kl[:-2])
+        
+    d = CreateCalcObj()
+    option = PBObj()
+    option.EndDate = GetCurrentTime()
+    option.Count = 23
+    klist = GetHisDataByField(g.code, BarType.Day, "close", option)
+    #print str(len(posi))+'仓位'
+    if len(klist)>0:    
+    #计算5天历史波动
+        Kl = np.array(klist, dtype=np.double)  
+        c5=d.GetVolatility(Kl[-6:])
+        c5_1=d.GetVolatility(Kl[-7:-1])
+        c5_2=d.GetVolatility(Kl[-8:-2])
+    
+    if g.signal == 0 and ((c5>c20 and c5_1<c20_1) or (c5<c5_1 and c5_1<c5_2)): #无持仓且入场信号
+        print "基本款4：入场信号，卖出开仓"
+        opc,opp = Getop(g.code)                   
+        QuickInsertOrder(g.a,opc, 'sell','open', g.price_type,g.num)
+        QuickInsertOrder(g.a,opp, 'sell','open', g.price_type,g.num)                  
+        g.now1old=now1    
+        g.call=opc
+        g.put=opp
+        callprice = Getprice(g.call)
+        putprice = Getprice(g.put)        
+        
+        g.cost=(callprice+putprice)*g.num*10000
+        g.signal=1 #卖出开仓
+        
+    elif g.signal!=0:   
+        info1 = GetContractInfo(g.call)
+        pr1 = info1['行权价格']
+        info2 = GetContractInfo(g.put)
+        pr2 = info2['行权价格']           
+        info1 = GetContractInfo(g.call)
+        kill = info1['行权到期日']
+        cutime = GetCurrentTime()
+        c = cutime.date()
+        sy = (kill - c).days       
+        callprice = Getprice(g.call)
+        putprice = Getprice(g.put)    
+     
+        ret=(g.cost-(callprice+putprice)*g.num*10000+g.profit)/g.cost        
+        if (sy <= 1 and cutime.hour==13 and cutime.minute==30) or ret > 0.5 or ret < -0.3 :#平仓出场
+            print "基本款4：平仓出场"
+            QuickInsertOrder(g.a,g.call, 'buy','close', g.price_type,g.num)            
+            QuickInsertOrder(g.a,g.put, 'buy','close', g.price_type,g.num)                                 
+            g.signal=0
+            g.profit=0
+            g.enterprice=callprice+putprice
+            
+        elif ((now1 > max(pr1,pr2) or now1 > 1.02*g.now1old) or (now1 < min(pr1,pr2) or now1< 0.98*g.now1old)) and sy>1  :
+            print "基本款4：移仓"         
+            callprice = Getprice(g.call)
+            putprice = Getprice(g.put)      
+            QuickInsertOrder(g.a,g.call, 'buy','close', g.price_type,g.num)            
+            QuickInsertOrder(g.a,g.put, 'buy','close', g.price_type,g.num)    
+            g.profit=(g.enterprice-callprice-putprice)*g.num*10000+g.profit
+            g.enterprice=callprice+putprice           
+            opc,opp = Getop2(g.code)               
+            QuickInsertOrder(g.a,opc, 'sell','open', g.price_type,g.num)            
+            QuickInsertOrder(g.a,opp, 'sell','open', g.price_type,g.num)              
+            g.call=opc
+            g.put=opp 
+            callprice = Getprice(g.call)
+            putprice = Getprice(g.put)                         
+            g.enterprice=callprice+putprice           
+            g.now1old = now1   
+            g.signal=1
+   
+    
+def OnTradeDeal(context, AccountName, trade) :
+    #TR = context.accounts["回测期货"].GetTradeDetail(trade.id, trade.bstype.BuySellFlag)
+    print "------------OnTradeDeal查询------------"
+    print "成交合约："+str(trade.contract)
+    print '成交价格:' + str(trade.price)
+    print "成交数量:"+str(trade.volume)
+    print "委托编号："+str(trade.orderid)
+    print "成交编号 ："+str(trade.id)
+            
+def Getop(code):
+    option = PBObj()    
+    option.EndDate = GetCurrentTime()
+    option.Count = 1
+    klinedata = GetHisData(g.code, BarType.Min30, option)                         
+    now1 = klinedata[-1].close #取得上一根K线的收盘价
+    cutime = GetCurrentTime()
+    #获取行权价档位
+    if now1 <= 3 :
+        interval=0.05 
+    elif now1 <= 5 :
+        interval = 0.1
+    elif now1 <= 10 :
+        interval = 0.25
+    elif now1 <= 20 :       
+        interval = 0.5
+    elif now1 <= 50 :          
+        interval = 1       
+    elif now1 <= 100 :
+        interval = 2.5
+    else :
+        interval = 5               
+    #获取对应行权价的合约  
+    now50p = round((now1)/interval)*interval-interval #平直或虚一档put
+    now50c = round((now1)/interval)*interval+interval #平直或虚一档call  
+    if abs(now50c-3.1)<0.00001:
+        now50p = 2.95    
+
+    atmopc = GetAtmOptionContract(code,0,now50c,0,'M')
+    atmopp = GetAtmOptionContract(code,0,now50p,1,'M')    
+    #如果合约存在
+    if atmopc :        
+        info1 = GetContractInfo(atmopc)
+        kill = info1['行权到期日']
+        c = cutime.date()
+        n = (kill - c).days        
+        month_time=cutime
+        if n<=5: #检查合约到期日是否大于5天，否则开仓下月
+            atmopc = GetAtmOptionContract(code,1,now50c,0,'M')
+            atmopp = GetAtmOptionContract(code,1,now50p,1,'M')           
+    return atmopc,atmopp                      
+
+
+def Getop2(code):
+    option = PBObj()    
+    option.EndDate = GetCurrentTime()
+    option.Count = 1
+    klinedata = GetHisData(g.code, BarType.Min30, option)                         
+    now1 = klinedata[-1].close #取得上一根K线的收盘价
+    cutime = GetCurrentTime()
+    #获取行权价档位
+    if now1 <= 3 :
+        interval=0.05 
+    elif now1 <= 5 :
+        interval = 0.1
+    elif now1 <= 10 :
+        interval = 0.25
+    elif now1 <= 20 :       
+        interval = 0.5
+    elif now1 <= 50 :          
+        interval = 1       
+    elif now1 <= 100 :
+        interval = 2.5
+    else :
+        interval = 5               
+    #获取对应行权价的合约
+    now50p = round((now1)/interval)*interval-interval #平直或虚一档put
+    now50c = round((now1)/interval)*interval+interval #平直或虚一档call  
+    if abs(now50c-3.1)<0.00001:
+        now50p = 2.95      
+    atmopc = GetAtmOptionContract(code,0,now50c,0,'M')
+    atmopp = GetAtmOptionContract(code,0,now50p,1,'M')           
+    #如果合约存在
+    if atmopc :        
+        info1 = GetContractInfo(atmopc)
+        kill = info1['行权到期日']
+        c = cutime.date()
+        n = (kill - c).days        
+        month_time=cutime
+        if n<=5: #检查合约到期日是否大于5天，否则开仓下月
+            atmopc = GetAtmOptionContract(code,1,now50c,0)
+            atmopp = GetAtmOptionContract(code,1,now50p,1)            
+    return atmopc,atmopp     
+
+def Getprice(code):
+    option = PBObj()
+    option.EndDate = GetCurrentTime()
+    klinedata = GetHisData(code, BarType.Min, option)  
+    now1 = klinedata[-1].close
+    time=klinedata[-1].datetime
+    return now1    
+
